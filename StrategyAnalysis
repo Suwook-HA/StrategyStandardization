@@ -1,0 +1,261 @@
+import warnings
+import os
+from pathlib import Path
+import re
+import logging
+from typing import List, Union
+import platform
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import rc
+
+# 
+# 엑셀 파일(.xlsx)은 스크립트 실행 시 첫 번째 인자로 전달된 디렉터리(예: 'data')에서 로드됩니다.
+# 예: python script.py data --output outputs
+# ─────────────────────────────────────────────────────────────────────────────
+# 로깅 설정: 로그 레벨과 포맷을 지정합니다.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 한글 폰트 설정 함수
+def configure_fonts():
+    """
+    시스템에 따라 한글 폰트를 설정하고, 음수 기호 처리를 합니다.
+    """
+    system = platform.system()
+    if system == 'Windows':
+        rc('font', family='Malgun Gothic')
+    elif system == 'Darwin':
+        rc('font', family='AppleGothic')
+    else:
+        rc('font', family='NanumGothic')
+    plt.rcParams['axes.unicode_minus'] = False
+    warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Excel 파일 목록 조회 함수
+def list_excel_files(directory: Union[str, Path]) -> List[Path]:
+    """지정 디렉터리 내 .xlsx 파일 리스트 반환"""
+    return list(Path(directory).glob('*.xlsx'))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 엑셀 시트 읽기 함수
+def read_sheet(path: Path, sheet_index: int = 0) -> pd.DataFrame:
+    """첫 번째 시트를 DataFrame으로 읽어옴"""
+    with pd.ExcelFile(path) as xls:
+        return pd.read_excel(xls, sheet_name=xls.sheet_names[sheet_index])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 데이터 전처리 함수
+def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    표준기구 공백 제거, 순번 결측 처리, 유효 행 필터링
+    """
+    df = df.copy()
+    df['표준기구'] = df['표준기구'].str.strip()
+    mask = df['소'].notna() & df['순번'].isna()
+    df.loc[mask, '순번'] = 0
+    df = df[df['소'].notna()]
+    def valid_seq(x):
+        if isinstance(x, str) and x.strip() == '신규':
+            return True
+        return pd.notna(pd.to_numeric(x, errors='coerce'))
+    return df[df['순번'].apply(valid_seq)]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 참여자 수 계산 함수
+def count_items(text: Union[str, int], pat: str = r'[,\n]+') -> int:
+    """쉼표(,) 또는 개행문자(\n) 기준 항목 개수 반환"""
+    if text == 0 or pd.isna(text):
+        return 0
+    return sum(bool(p.strip()) for p in re.split(pat, str(text)))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 참여자 수 컬럼 추가 함수
+def add_participation_counts(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in ['ETRI 기고자', 'ETRI 에디터(예정포함)', 'ETRI 의장단']:
+        df[col] = df[col].fillna(0)
+        df[f'{col}_count'] = df[col].apply(count_items)
+    return df
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 상태별 이진 컬럼 확장 함수
+def expand_status_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    status_map = {
+        '제정완료': 'completed',
+        '개발중': 'in_dev',
+        '제안중': 'proposed',
+        '계획중': 'planned',
+        '개발중단': 'stopped'
+    }
+    for kor, eng in status_map.items():
+        df[f'status_{eng}'] = (df['표준화 상태'] == kor).astype(int)
+    return df
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 연도 포맷 정리 함수
+def normalize_year_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in ['(예정) 시작년도  ', '(예정) 완료연도']:
+        df[col] = df[col].apply(
+            lambda v: f"'{int(v) % 100:02d}" if isinstance(v, (int, float)) and float(v).is_integer() else v
+        )
+    return df
+
+# ─────────────────────────────────────────────────────────────────────────────
+# '직책(이름)' 형태 추출 함수
+extract_position_and_name = lambda text: sorted(set(
+    re.findall(r'([가-힣A-Za-z0-9\s/]+?\([가-힣]{2,4}\))', text)
+))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 개발 단계 계산 함수
+def compute_development_stage(row: pd.Series) -> float:
+    """표준건수 합계 기반으로 개발 단계 값 계산"""
+    total = row['표준건수 합계']
+    if total == 0:
+        return 0.0
+    p = row['status_planned']
+    pr = row['status_proposed']
+    d = row['status_in_dev']
+    c = row['status_completed']
+    if (p + pr) / total >= d / total and (p + pr) / total >= c / total:
+        return (p * 0.5 + pr * 0.5) / total
+    if d / total >= c / total:
+        return 1 + d / total
+    return 2 + c / total
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 그룹화 및 파일 저장 함수
+def save_grouped_tables(df: pd.DataFrame, out_dir: Path):
+    out_dir.mkdir(exist_ok=True)
+    specs = [
+        (['소'], ['status_completed', 'status_in_dev', 'status_proposed', 'status_planned'], '0-1_overview.xlsx'),
+        (['표준기구', '소', '본부(단)'], ['status_completed', 'status_in_dev', 'ETRI 의장단_count'], '2_org_participation.xlsx'),
+        (['전략기술 분야', '세부중점기술 분야'], ['status_planned', 'status_proposed', 'status_in_dev', 'status_completed', 'ETRI 의장단_count', 'ETRI 에디터(예정포함)_count', 'ETRI 기고자_count'], '15_overview.xlsx')
+    ]
+    for cols, aggs, fname in specs:
+        df.groupby(cols, as_index=False)[aggs].sum().to_excel(out_dir / fname, index=False)
+        logger.info(f"Saved {fname}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 그래프 그리기 함수
+def plot_overall(df: pd.DataFrame, out_path: Path):
+    plt.figure(figsize=(12, 8))
+    for tech, data in df.groupby('세부중점기술 분야'):
+        plt.scatter(data['표준개발 단계'], data['표준화 역량'], label=tech, alpha=0.7)
+    plt.xlabel('표준개발 단계')
+    plt.ylabel('표준화 역량')
+    plt.title('세부중점기술 분야별 표준개발 단계와 표준화 역량')
+    plt.xlim(0, 3.5)
+    plt.ylim(0, 3.5)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(out_path / 'all_scatter.jpg', dpi=300, bbox_inches='tight')
+    plt.close()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 분야별 그래프 그리기 함수
+def plot_by_field(df: pd.DataFrame, out_dir: Path):
+    for field in df['전략기술 분야'].unique():
+        sub = df[df['전략기술 분야'] == field]
+        plt.figure(figsize=(12, 8))
+        for _, row in sub.iterrows():
+            plt.scatter(row['표준개발 단계'], row['표준화 역량'], alpha=0.7)
+            plt.annotate(
+                row['세부중점기술 분야'],
+                (row['표준개발 단계'], row['표준화 역량']),
+                xytext=(5, 5), textcoords='offset points'
+            )
+        plt.xlabel('표준개발 단계')
+        plt.ylabel('표준화 역량')
+        plt.title(f"[{field}] 세부중점기술 분야별 표준개발 단계와 표준화 역량")
+        plt.xlim(0, 3.5)
+        plt.ylim(0, 3.5)
+        plt.legend(sub['세부중점기술 분야'], bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(out_dir / f"scatter_{field}.jpg", dpi=300, bbox_inches='tight')
+        plt.close()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 의장단 현황 보고서 생성 함수
+def generate_chair_reports(df: pd.DataFrame, out_dir: Path):
+    # 문자열 형식 보장을 위해 ETRI 의장단 컬럼을 문자열로 변환
+    df = df.copy()
+    df['ETRI 의장단'] = df['ETRI 의장단'].fillna('').astype(str).str.strip()
+    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(exist_ok=True)
+    # 전략기술 분야별
+    strat = df[['전략기술 분야', 'ETRI 의장단']].dropna()
+    strat = strat[~strat['ETRI 의장단'].isin(['', '0', '-'])]
+    sc = strat.groupby('전략기술 분야')['ETRI 의장단'].apply(lambda x: ', '.join(x)).reset_index()
+    sc['고유명단'] = sc['ETRI 의장단'].apply(lambda x: ', '.join(extract_position_and_name(x)))
+    sc['인원수'] = sc['고유명단'].apply(lambda x: len([n for n in x.split(',') if n.strip()]))
+    sc.to_excel(out_dir / 'chairs_by_strategy.xlsx', index=False)
+    # 기관별
+    org = df[['표준기구', 'ETRI 의장단']].dropna()
+    org = org[~org['ETRI 의장단'].isin(['', '0', '-'])]
+    oc = org.groupby('표준기구')['ETRI 의장단'].apply(lambda x: ', '.join(x)).reset_index()
+    oc['고유명단'] = oc['ETRI 의장단'].apply(lambda x: ', '.join(extract_position_and_name(x)))
+    oc['인원수'] = oc['고유명단'].apply(lambda x: len([n for n in x.split(',') if n.strip()]))
+    oc.to_excel(out_dir / 'chairs_by_org.xlsx', index=False)
+    logger.info("Chair reports saved")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 메인 함수
+def main(data_dir: str, output_dir: str = 'outputs'):
+    configure_fonts()
+    files = list_excel_files(data_dir)
+    if not files:
+        logger.error(f"No Excel files in {data_dir}")
+        return
+    df = read_sheet(files[0])
+    df = clean_dataframe(df)
+    df = add_participation_counts(df)
+    df = expand_status_columns(df)
+    df = normalize_year_columns(df)
+    out = Path(output_dir)
+    out.mkdir(exist_ok=True)
+    df.to_excel(out / 'all_data.xlsx', index=False)
+    save_grouped_tables(df, out)
+    g15 = pd.read_excel(out / '15_overview.xlsx')
+    g15['표준건수 합계'] = g15[['status_planned', 'status_proposed', 'status_in_dev', 'status_completed']].sum(axis=1)
+    g15['표준개발 단계'] = g15.apply(compute_development_stage, axis=1)
+    g15['표준화 역량 계산값'] = (
+        np.log(1 + g15['ETRI 의장단_count'] * 0.1) +
+        np.log(1 + g15['ETRI 에디터(예정포함)_count'] * 0.2) +
+        np.log(1 + g15['ETRI 기고자_count'] * 0.7)
+    ) / 100
+    max_vals = g15[~g15['세부중점기술 분야'].str.contains('기타')].groupby('전략기술 분야')['표준화 역량 계산값'].transform('max')
+    g15['표준화 역량'] = (g15['표준화 역량 계산값'] / max_vals) * 3
+    g15.to_excel(out / '15_detailed.xlsx', index=False)
+    plot_overall(g15, out)
+    plot_by_field(g15, out)
+    generate_chair_reports(df, out)
+    logger.info("Processing complete")
+
+# 실행부
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="엑셀 기반 표준화 데이터 처리 및 분석"
+    )
+    # notebook 실행 시 kernel 인자를 무시하고, 기본 폴더(data/)를 사용하도록 수정
+    parser.add_argument('--data_dir', '-i', default='data', help='엑셀 파일이 위치한 디렉터리 (기본: data/)')
+    parser.add_argument('--output', '-o', default='outputs', help='결과 저장 디렉터리')
+    # parse_known_args 로 Jupyter kernel 인자 무시
+    args, _ = parser.parse_known_args()
+    # 데이터 디렉터리에서 엑셀 파일 로드
+    logger.info(f"Loading Excel files from: {args.data_dir}")
+    main(args.data_dir, args.output)
