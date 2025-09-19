@@ -1,1 +1,2 @@
-None
+__pycache__/
+*.pyc
