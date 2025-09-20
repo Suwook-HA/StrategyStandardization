@@ -5,6 +5,12 @@ from .api_client import BithumbAPI, BithumbAPIError
 from .decision import Action, TradeDecision
 from .engine import TradingEngine
 from .llm import LLMDecisionMaker, LLMClient, OpenAIChatClient
+from .multi_agent import (
+    MultiAgentPortfolioManager,
+    PortfolioCycleResult,
+    StrategyAgentBundle,
+    StrategyCycleResult,
+)
 from .risk import RiskManager
 
 __all__ = [
@@ -21,5 +27,9 @@ __all__ = [
     "LLMDecisionMaker",
     "LLMClient",
     "OpenAIChatClient",
+    "StrategyAgentBundle",
+    "StrategyCycleResult",
+    "PortfolioCycleResult",
+    "MultiAgentPortfolioManager",
     "RiskManager",
 ]

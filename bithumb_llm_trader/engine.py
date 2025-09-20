@@ -12,21 +12,10 @@ from .config import StrategyConfig
 from .decision import Action, TradeDecision
 from .llm import LLMDecisionMaker
 from .risk import RiskManager
+from .utils import extract_balance, format_units, safe_float
 
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _format_units(value: float) -> str:
-    formatted = f"{value:.8f}".rstrip("0").rstrip(".")
-    return formatted or "0"
 
 
 @dataclass(slots=True)
@@ -87,7 +76,7 @@ class TradingEngine:
             logger.info("No trade executed: %s", decision.reasoning)
             return decision
 
-        price = decision.target_price or _safe_float(market_state["ticker"].get("closing_price"))
+        price = decision.target_price or safe_float(market_state["ticker"].get("closing_price"))
         if price <= 0:
             logger.warning("Execution aborted: invalid price derived from market data.")
             return TradeDecision.hold(
@@ -103,7 +92,7 @@ class TradingEngine:
             return decision.with_adjustments(target_price=price)
 
         order_type = "bid" if decision.action is Action.BUY else "ask"
-        units = _format_units(decision.amount)
+        units = format_units(decision.amount)
         pair = self.config.trading_pair
         try:
             response = self.api.place_order(
@@ -111,7 +100,7 @@ class TradingEngine:
                 order_currency=pair.order_currency,
                 payment_currency=pair.payment_currency,
                 units=units,
-                price=_format_units(price),
+                price=format_units(price),
             )
             logger.info("Order response: %s", response)
         except BithumbAPIError as exc:
@@ -124,18 +113,7 @@ class TradingEngine:
         return decision.with_adjustments(target_price=price)
 
     def _extract_balance(self, data: Dict[str, Any], currency: str) -> float:
-        keys = [
-            f"available_{currency.lower()}",
-            f"available_{currency.upper()}",
-            f"available_{currency}",
-            currency.lower(),
-            currency.upper(),
-            currency,
-        ]
-        for key in keys:
-            if key in data:
-                return _safe_float(data[key])
-        return 0.0
+        return extract_balance(data, currency)
 
     def _record_history(self, decision: TradeDecision) -> None:
         entry = {
