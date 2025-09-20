@@ -7,13 +7,7 @@ from typing import Any, Dict
 
 from .config import RiskConfig
 from .decision import Action, TradeDecision
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+from .utils import safe_float
 
 
 @dataclass(slots=True)
@@ -58,7 +52,7 @@ class RiskManager:
     def _assess_buy(
         self, decision: TradeDecision, price: float, account_state: Dict[str, Any]
     ) -> TradeDecision:
-        available_cash = _safe_float(account_state.get("balance_payment_currency"))
+        available_cash = safe_float(account_state.get("balance_payment_currency"))
         max_by_cash = available_cash / price if price else 0.0
         max_by_value = self.config.max_trade_value / price if price else 0.0
         allowed = min(
@@ -79,7 +73,7 @@ class RiskManager:
     def _assess_sell(
         self, decision: TradeDecision, price: float, account_state: Dict[str, Any]
     ) -> TradeDecision:
-        available_asset = _safe_float(account_state.get("balance_order_currency"))
+        available_asset = safe_float(account_state.get("balance_order_currency"))
         allowed = min(
             max(decision.amount, 0.0),
             self.config.max_position_size,
@@ -104,7 +98,7 @@ class RiskManager:
             ticker.get("price"),
         ]
         for value in candidates:
-            price = _safe_float(value, -1)
+            price = safe_float(value, -1)
             if price > 0:
                 return price
         return -1.0

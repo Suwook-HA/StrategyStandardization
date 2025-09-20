@@ -14,6 +14,7 @@
 | `bithumb_llm_trader.decision` | LLM 출력 JSON 파싱 및 검증 로직 |
 | `bithumb_llm_trader.risk` | 리스크 한도(신뢰도·포지션·손절/익절) 적용 |
 | `bithumb_llm_trader.engine` | 전체 파이프라인(데이터 수집 → LLM 의사결정 → 리스크 검증 → 주문) 조율 |
+| `bithumb_llm_trader.multi_agent` | 복수 전략/자산을 아우르는 멀티 에이전트 포트폴리오 매니저 |
 | `bithumb_llm_trader.main` | CLI 실행 진입점 (`python -m bithumb_llm_trader.main`) |
 
 모듈은 모두 독립적으로 테스트 가능하도록 설계되었으며, `tests/` 디렉터리의 Pytest 스위트가 핵심 동작을 검증합니다.
@@ -75,6 +76,10 @@
 4. **리스크 필터링** – `RiskManager`가 신뢰도·자금·포지션 한도를 점검하고 손절/익절 가격을 부여합니다.
 5. **주문 실행** – 드라이런 여부에 따라 실제 주문을 전송하거나, 실행 정보만 기록합니다.
 6. **이력 관리** – 최근 의사결정/실행 내역은 `TradingEngine.history`에 보관됩니다.
+
+### 포트폴리오 레벨 멀티 에이전트 오케스트레이션
+
+`MultiAgentPortfolioManager`는 여러 `StrategyConfig` 묶음을 동시에 실행할 수 있는 상위 레이어입니다. 전략마다 LLM 결정을 내리고(`LLMDecisionMaker`), 리스크 매니저로 보정한 뒤(`RiskManager`), 실행 에이전트가 실제 주문 또는 드라이런을 수행합니다. 각 전략의 결과(`StrategyCycleResult`)와 현금/포지션 집계가 `PortfolioCycleResult`로 반환되어 포트폴리오 차원의 의사결정 및 리밸런싱에 활용할 수 있습니다.
 
 ## 테스트
 
